@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Behavioral Biometrics KYC Demo",
+  title: "nCrypted · Swipe Identity Demo",
   description: "Analyze swipe gestures for behavioral authentication",
 };
 
