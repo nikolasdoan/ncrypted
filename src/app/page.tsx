@@ -6,8 +6,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { GestureCanvas } from "@/components/gesture-canvas"
-import { extractFeatures, featuresToVector, type GestureSample, type GestureFeatures } from "@/lib/features"
+import { GestureCanvas, CANVAS_WIDTH, CANVAS_HEIGHT } from "@/components/gesture-canvas"
+import { extractFeatures, swipeVector, type GestureSample, type GestureFeatures } from "@/lib/features"
 import {
   LineChart,
   Line,
@@ -24,104 +24,110 @@ import {
   Legend,
 } from "recharts"
 
-const USER_ID = "demo-user"
+const MIN_SWIPES = 10
+/** Verify scores the last few swipes together; more swipes, surer answer. */
+const WINDOW = 5
 
-interface VerifyResult {
-  score: number
-  risk: "low" | "medium" | "high"
-  baseline: number[]
-  current: number[]
+type Person = { person: string; swipes: number }
+type Risk = "low" | "medium" | "high"
+
+function riskOf(score: number): Risk {
+  if (score >= 65) return "low"
+  if (score >= 35) return "medium"
+  return "high"
+}
+
+function velocitySeries(samples: GestureSample[]) {
+  return samples.slice(1).map((s, i) => {
+    const prev = samples[i]
+    const dt = (s.timestamp - prev.timestamp) / 1000
+    return { time: i, velocity: dt > 0 ? Math.hypot(s.x - prev.x, s.y - prev.y) / dt : 0 }
+  })
 }
 
 export default function Home() {
-  const [enrollmentCount, setEnrollmentCount] = useState(0)
+  const [people, setPeople] = useState<Person[]>([])
+  const [enrolName, setEnrolName] = useState("Owner")
+  const [checkAs, setCheckAs] = useState<string | null>(null)
+  const [recent, setRecent] = useState<number[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
-  const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null)
   const [velocityHistory, setVelocityHistory] = useState<{ time: number; velocity: number }[]>([])
   const [lastFeatures, setLastFeatures] = useState<GestureFeatures | null>(null)
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null)
 
-  const handleEnroll = useCallback(async (samples: GestureSample[]) => {
-    setIsProcessing(true)
-    setMessage(null)
-    try {
-      const features = extractFeatures(samples)
-      setLastFeatures(features)
-      const vector = featuresToVector(features)
+  const ready = people.filter((p) => p.swipes >= MIN_SWIPES)
+  const score = recent.length ? Math.round((recent.reduce((a, b) => a + b, 0) / recent.length) * 100) : null
+  const risk = score === null ? null : riskOf(score)
 
-      const velocities = samples.slice(1).map((s, i) => {
-        const prev = samples[i]
-        const dx = s.x - prev.x
-        const dy = s.y - prev.y
-        const dt = (s.timestamp - prev.timestamp) / 1000
-        return { time: i, velocity: dt > 0 ? Math.sqrt(dx * dx + dy * dy) / dt : 0 }
-      })
-      setVelocityHistory(velocities)
-
-      const res = await fetch("/api/enroll", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: USER_ID, vector }),
-      })
-      const data = await res.json()
-      setEnrollmentCount(data.samplesCollected)
-      setMessage({ type: "success", text: `Sample ${data.samplesCollected} enrolled successfully` })
-    } catch {
-      setMessage({ type: "error", text: "Enrollment failed" })
-    } finally {
-      setIsProcessing(false)
-    }
+  const describe = useCallback((samples: GestureSample[]) => {
+    setLastFeatures(extractFeatures(samples))
+    setVelocityHistory(velocitySeries(samples))
+    return swipeVector(samples, CANVAS_WIDTH, CANVAS_HEIGHT)
   }, [])
 
-  const handleVerify = useCallback(async (samples: GestureSample[]) => {
-    setIsProcessing(true)
-    setMessage(null)
-    try {
-      const features = extractFeatures(samples)
-      setLastFeatures(features)
-      const vector = featuresToVector(features)
-
-      const velocities = samples.slice(1).map((s, i) => {
-        const prev = samples[i]
-        const dx = s.x - prev.x
-        const dy = s.y - prev.y
-        const dt = (s.timestamp - prev.timestamp) / 1000
-        return { time: i, velocity: dt > 0 ? Math.sqrt(dx * dx + dy * dy) / dt : 0 }
-      })
-      setVelocityHistory(velocities)
-
-      const res = await fetch("/api/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: USER_ID, vector }),
-      })
-
-      if (!res.ok) {
-        const err = await res.json()
-        setMessage({ type: "error", text: err.error || "Verification failed" })
-        return
+  const handleEnroll = useCallback(
+    async (samples: GestureSample[]) => {
+      setIsProcessing(true)
+      setMessage(null)
+      try {
+        const res = await fetch("/api/enroll", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ person: enrolName, vector: describe(samples) }),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error)
+        setPeople(data.people)
+        setMessage({ type: "success", text: `${data.person}: swipe ${data.swipes} enrolled` })
+      } catch {
+        setMessage({ type: "error", text: "Enrollment failed" })
+      } finally {
+        setIsProcessing(false)
       }
+    },
+    [enrolName, describe],
+  )
 
-      const data: VerifyResult = await res.json()
-      setVerifyResult(data)
-      setMessage({
-        type: data.risk === "high" ? "error" : "success",
-        text: `Score: ${data.score}% — Risk: ${data.risk.toUpperCase()}`,
-      })
-    } catch {
-      setMessage({ type: "error", text: "Verification failed" })
-    } finally {
-      setIsProcessing(false)
-    }
-  }, [])
+  const handleVerify = useCallback(
+    async (samples: GestureSample[]) => {
+      if (!checkAs) return
+      setIsProcessing(true)
+      setMessage(null)
+      try {
+        const res = await fetch("/api/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ person: checkAs, vector: describe(samples) }),
+        })
+        const data = await res.json()
+        if (!res.ok) {
+          setMessage({ type: "error", text: data.error || "Verification failed" })
+          return
+        }
+        setRecent((prev) => [...prev, data.probability].slice(-WINDOW))
+      } catch {
+        setMessage({ type: "error", text: "Verification failed" })
+      } finally {
+        setIsProcessing(false)
+      }
+    },
+    [checkAs, describe],
+  )
+
+  const chooseCheckAs = (person: string) => {
+    setCheckAs(person)
+    setRecent([])
+    setMessage(null)
+  }
 
   const handleReset = async () => {
-    await fetch(`/api/enroll?userId=${USER_ID}`, { method: "DELETE" })
-    setEnrollmentCount(0)
-    setVerifyResult(null)
+    await fetch("/api/enroll", { method: "DELETE" })
+    setPeople([])
+    setCheckAs(null)
+    setRecent([])
     setVelocityHistory([])
     setLastFeatures(null)
-    setMessage({ type: "success", text: "Profile cleared" })
+    setMessage({ type: "success", text: "All profiles cleared" })
   }
 
   const radarData = lastFeatures
@@ -147,7 +153,7 @@ export default function Home() {
         <Tabs defaultValue="enroll" className="w-full">
           <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="enroll">
-              Enroll {enrollmentCount > 0 && <Badge variant="secondary" className="ml-2">{enrollmentCount}</Badge>}
+              Enroll {people.length > 0 && <Badge variant="secondary" className="ml-2">{people.length}</Badge>}
             </TabsTrigger>
             <TabsTrigger value="verify">Verify</TabsTrigger>
             <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
@@ -158,22 +164,40 @@ export default function Home() {
               <CardHeader>
                 <CardTitle>Enrollment</CardTitle>
                 <CardDescription>
-                  Draw 3+ patterns to build your behavioral profile. Each pattern captures your unique gesture dynamics.
+                  Each person swipes {MIN_SWIPES}+ times under their own name. Enrol at least two people: the model
+                  learns the owner by telling them apart from someone else.
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col items-center space-y-4">
-                <GestureCanvas onGestureComplete={handleEnroll} disabled={isProcessing} />
+                <label className="flex items-center gap-2 text-sm">
+                  Enrolling as
+                  <input
+                    value={enrolName}
+                    onChange={(e) => setEnrolName(e.target.value)}
+                    className="rounded-md border border-border bg-card px-3 py-1.5"
+                  />
+                </label>
+                <GestureCanvas onGestureComplete={handleEnroll} disabled={isProcessing || !enrolName.trim()} />
                 {message && (
                   <Alert variant={message.type === "error" ? "destructive" : "default"}>
                     <AlertDescription>{message.text}</AlertDescription>
                   </Alert>
                 )}
-                {enrollmentCount >= 3 && (
-                  <p className="text-sm text-green-600">Profile ready! Switch to Verify tab to test.</p>
+                {people.length > 0 && (
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {people.map((p) => (
+                      <Badge key={p.person} variant={p.swipes >= MIN_SWIPES ? "default" : "secondary"}>
+                        {p.person}: {p.swipes}/{MIN_SWIPES}
+                      </Badge>
+                    ))}
+                  </div>
                 )}
-                {enrollmentCount > 0 && (
+                {ready.length >= 2 && (
+                  <p className="text-sm text-green-600">Ready! Switch to the Verify tab.</p>
+                )}
+                {people.length > 0 && (
                   <Button variant="outline" onClick={handleReset}>
-                    Clear Profile
+                    Clear all profiles
                   </Button>
                 )}
               </CardContent>
@@ -185,38 +209,50 @@ export default function Home() {
               <CardHeader>
                 <CardTitle>Verification</CardTitle>
                 <CardDescription>
-                  Draw a pattern to verify against your enrolled profile.
+                  Pick whose account this is, then swipe. The score combines your last {WINDOW} swipes.
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col items-center space-y-4">
-                {enrollmentCount < 3 ? (
+                {ready.length < 2 ? (
                   <Alert>
                     <AlertDescription>
-                      Please enroll at least 3 samples first.
+                      Enrol at least two people with {MIN_SWIPES}+ swipes each first.
                     </AlertDescription>
                   </Alert>
                 ) : (
                   <>
-                    <GestureCanvas onGestureComplete={handleVerify} disabled={isProcessing} />
+                    <div className="flex flex-wrap items-center justify-center gap-2 text-sm">
+                      Account of
+                      {ready.map((p) => (
+                        <Button
+                          key={p.person}
+                          size="sm"
+                          variant={checkAs === p.person ? "default" : "outline"}
+                          onClick={() => chooseCheckAs(p.person)}
+                        >
+                          {p.person}
+                        </Button>
+                      ))}
+                    </div>
+                    <GestureCanvas onGestureComplete={handleVerify} disabled={isProcessing || !checkAs} />
                     {message && (
                       <Alert variant={message.type === "error" ? "destructive" : "default"}>
                         <AlertDescription>{message.text}</AlertDescription>
                       </Alert>
                     )}
-                    {verifyResult && (
-                      <div className="flex items-center gap-4">
-                        <div className="text-4xl font-bold">{verifyResult.score}%</div>
-                        <Badge
-                          variant={
-                            verifyResult.risk === "low"
-                              ? "default"
-                              : verifyResult.risk === "medium"
-                              ? "secondary"
-                              : "destructive"
-                          }
-                        >
-                          {verifyResult.risk.toUpperCase()} RISK
-                        </Badge>
+                    {score !== null && risk && (
+                      <div className="flex flex-col items-center gap-2">
+                        <div className="flex items-center gap-4">
+                          <div className="text-4xl font-bold">{score}%</div>
+                          <Badge
+                            variant={risk === "low" ? "default" : risk === "medium" ? "secondary" : "destructive"}
+                          >
+                            {risk.toUpperCase()} RISK
+                          </Badge>
+                        </div>
+                        <p className="text-sm text-muted-foreground">
+                          Match with {checkAs}’s swipe profile · based on {recent.length} swipe{recent.length === 1 ? "" : "s"}
+                        </p>
                       </div>
                     )}
                   </>

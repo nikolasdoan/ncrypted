@@ -97,42 +97,65 @@ export function extractFeatures(samples: GestureSample[]): GestureFeatures {
   }
 }
 
-export function featuresToVector(features: GestureFeatures): number[] {
+function percentile(sorted: number[], q: number): number {
+  if (sorted.length === 0) return 0
+  const pos = (sorted.length - 1) * q
+  const lo = Math.floor(pos)
+  const hi = Math.ceil(pos)
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo)
+}
+
+/**
+ * The 20 numbers the model sees for one swipe. Same features, in the same
+ * order, as eval/evaluate_rf.py, which measured the accuracy in the deck.
+ * Positions are fractions of the canvas, so they mean the same at any size.
+ */
+export function swipeVector(samples: GestureSample[], canvasWidth: number, canvasHeight: number): number[] {
+  const s = samples
+  const n = s.length
+  const x = s.map((p) => p.x)
+  const y = s.map((p) => p.y)
+  const steps: number[] = []
+  const vel: number[] = []
+  for (let i = 1; i < n; i++) {
+    const step = Math.hypot(x[i] - x[i - 1], y[i] - y[i - 1])
+    steps.push(step)
+    const dt = (s[i].timestamp - s[i - 1].timestamp) / 1000
+    if (dt > 0) vel.push(step / dt)
+  }
+  if (vel.length === 0) vel.push(0)
+  const L = steps.reduce((a, b) => a + b, 0)
+  const D = Math.hypot(x[n - 1] - x[0], y[n - 1] - y[0])
+  const dur = Math.max(s[n - 1].timestamp - s[0].timestamp, 1)
+  // distance of each point from the straight line start -> end
+  const dev =
+    D > 0
+      ? x.map((_, i) => Math.abs((x[n - 1] - x[0]) * (y[0] - y[i]) - (x[0] - x[i]) * (y[n - 1] - y[0])) / D)
+      : [0]
+  const sortedVel = [...vel].sort((a, b) => a - b)
+  const mid = Math.floor(n / 2)
+  const pressures = s.map((p) => p.pressure)
+  const areas = s.map((p) => p.width * p.height)
   return [
-    features.velocityMean,
-    features.velocityStd,
-    features.accelerationMean,
-    features.pressureMean,
-    features.pressureStd,
-    features.strokeDuration / 1000,
-    features.sampleCount / 100,
-    features.curvatureMean,
-    features.touchAreaMean,
+    x[0] / canvasWidth,
+    y[0] / canvasHeight,
+    x[n - 1] / canvasWidth,
+    y[n - 1] / canvasHeight,
+    Math.log(dur),
+    Math.log(L + 1),
+    L ? D / L : 1,
+    Math.atan2(y[n - 1] - y[0], x[n - 1] - x[0]),
+    percentile(sortedVel, 0.2),
+    percentile(sortedVel, 0.5),
+    percentile(sortedVel, 0.8),
+    mean(vel.slice(0, 3)),
+    mean(vel.slice(-3)),
+    Math.max(...dev),
+    mean(dev),
+    pressures[mid],
+    mean(pressures),
+    areas[mid],
+    mean(areas),
+    n,
   ]
-}
-
-export function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0
-  let dotProduct = 0
-  let normA = 0
-  let normB = 0
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i]
-    normA += a[i] * a[i]
-    normB += b[i] * b[i]
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB)
-  if (denom === 0) return 0
-  return dotProduct / denom
-}
-
-export function averageVectors(vectors: number[][]): number[] {
-  if (vectors.length === 0) return []
-  const result = new Array(vectors[0].length).fill(0)
-  for (const vec of vectors) {
-    for (let i = 0; i < vec.length; i++) {
-      result[i] += vec[i]
-    }
-  }
-  return result.map((v) => v / vectors.length)
 }

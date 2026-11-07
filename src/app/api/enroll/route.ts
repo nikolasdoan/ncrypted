@@ -1,50 +1,26 @@
 import { NextResponse } from "next/server"
-
-const profiles = new Map<string, number[][]>()
+import { people, profiles } from "@/lib/model"
 
 export async function POST(request: Request) {
-  const { userId, vector } = await request.json()
+  const { person, vector } = await request.json()
 
-  if (!userId || !vector || !Array.isArray(vector)) {
+  if (typeof person !== "string" || !person.trim() || !Array.isArray(vector)) {
     return NextResponse.json({ error: "Invalid request" }, { status: 400 })
   }
 
-  const existing = profiles.get(userId) || []
+  const name = person.trim()
+  const existing = profiles.get(name) ?? []
   existing.push(vector)
-  profiles.set(userId, existing)
+  profiles.set(name, existing)
 
-  return NextResponse.json({
-    status: "enrolled",
-    samplesCollected: existing.length,
-  })
+  return NextResponse.json({ person: name, swipes: existing.length, people: people() })
 }
 
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url)
-  const userId = searchParams.get("userId")
-
-  if (!userId) {
-    return NextResponse.json({ error: "userId required" }, { status: 400 })
-  }
-
-  const vectors = profiles.get(userId)
-  if (!vectors || vectors.length === 0) {
-    return NextResponse.json({ enrolled: false, samples: 0 })
-  }
-
-  return NextResponse.json({ enrolled: true, samples: vectors.length })
+export async function GET() {
+  return NextResponse.json({ people: people() })
 }
 
-export async function DELETE(request: Request) {
-  const { searchParams } = new URL(request.url)
-  const userId = searchParams.get("userId")
-
-  if (!userId) {
-    return NextResponse.json({ error: "userId required" }, { status: 400 })
-  }
-
-  profiles.delete(userId)
-  return NextResponse.json({ status: "cleared" })
+export async function DELETE() {
+  profiles.clear()
+  return NextResponse.json({ people: [] })
 }
-
-export { profiles }

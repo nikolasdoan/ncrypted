@@ -8,6 +8,9 @@ interface GestureCanvasProps {
   disabled?: boolean
 }
 
+export const CANVAS_WIDTH = 400
+export const CANVAS_HEIGHT = 300
+
 export function GestureCanvas({ onGestureComplete, disabled }: GestureCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [isDrawing, setIsDrawing] = useState(false)
@@ -95,8 +98,8 @@ export function GestureCanvas({ onGestureComplete, disabled }: GestureCanvasProp
     <div className="relative">
       <canvas
         ref={canvasRef}
-        width={400}
-        height={300}
+        width={CANVAS_WIDTH}
+        height={CANVAS_HEIGHT}
         className={`border border-border rounded-lg bg-card touch-none ${
           disabled ? "opacity-50 cursor-not-allowed" : "cursor-crosshair"
         }`}
